@@ -1,0 +1,108 @@
+{
+  "theme": "light",
+  "archetype": "4",
+  "archetype_name": "Swiss & High-Contrast",
+  "emotional_tone": "Authoritative, Objective, Rigid, Functional",
+  "design_concept": "High-contrast neo-brutalism meets Swiss grid. Raw HTML feel with sharp borders. Color used purely as a function of status. Strong emphasis on data legibility and 'command-center' operations for Discord bots.",
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "IBM Plex Sans",
+    "mono_font": "JetBrains Mono",
+    "pairing_strategy": "The Swiss Brutalist: One expressive display head (Cabinet Grotesk), clean sans for body (IBM Plex Sans), and strict monospace (JetBrains Mono) for verification codes and data logs.",
+    "scale": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tighter leading-none font-black",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight leading-tight font-bold",
+      "h3": "text-xl sm:text-2xl tracking-tight font-bold",
+      "body": "text-base leading-relaxed",
+      "code": "font-mono text-sm tracking-tight"
+    }
+  },
+  "colors": {
+    "background": {
+      "primary": "#FFFFFF",
+      "secondary": "#F4F4F5",
+      "surface": "#FFFFFF",
+      "inverse": "#09090B"
+    },
+    "text": {
+      "primary": "#09090B",
+      "secondary": "#52525B",
+      "muted": "#71717A",
+      "inverse": "#FFFFFF"
+    },
+    "border": {
+      "default": "#09090B",
+      "muted": "#E4E4E7"
+    },
+    "accents": {
+      "primary": "#002FA7",
+      "primary_hover": "#001B63",
+      "danger": "#EF4444",
+      "warning": "#F59E0B",
+      "success": "#10B981"
+    }
+  },
+  "spacing_and_layout": {
+    "strategy": "Strict grid hierarchy, dense for dashboards, wide for marketing. Generous padding in containers.",
+    "container_padding": "p-8 md:p-12",
+    "dashboard_grid": "grid-cols-1 md:grid-cols-3 lg:grid-cols-4 gap-6",
+    "alignment": "Optical alignment. Left-aligned text heavily enforced for readability. Headings left-aligned."
+  },
+  "surfaces_and_borders": {
+    "style": "Grid Borders (The Technical Look). High-contrast.",
+    "card": "border-2 border-[#09090B] bg-white rounded-none shadow-[4px_4px_0px_0px_#09090B] hover:shadow-[2px_2px_0px_0px_#09090B] hover:translate-x-[2px] hover:translate-y-[2px] transition-all duration-100",
+    "input": "border-2 border-[#09090B] bg-white rounded-none focus:ring-2 focus:ring-[#002FA7] focus:border-[#002FA7] focus:outline-none p-3",
+    "glassmorphism": "bg-white/90 backdrop-blur-xl border-b-2 border-[#09090B]"
+  },
+  "components": {
+    "buttons": {
+      "primary": "border-2 border-[#09090B] font-bold uppercase tracking-widest bg-[#09090B] text-white hover:bg-[#002FA7] hover:text-white transition-colors rounded-none px-6 py-3 shadow-[4px_4px_0px_0px_rgba(0,0,0,0.2)] active:shadow-none active:translate-x-[4px] active:translate-y-[4px]",
+      "secondary": "border-2 border-[#09090B] font-bold uppercase tracking-widest bg-white text-[#09090B] hover:bg-[#F4F4F5] transition-colors rounded-none px-6 py-3 shadow-[4px_4px_0px_0px_#09090B] active:shadow-none active:translate-x-[4px] active:translate-y-[4px]"
+    },
+    "status_badges": {
+      "verified": "font-mono text-xs uppercase px-2 py-1 border-2 border-[#10B981] bg-[#10B981]/10 text-[#10B981] inline-flex items-center gap-2",
+      "pending": "font-mono text-xs uppercase px-2 py-1 border-2 border-[#F59E0B] bg-[#F59E0B]/10 text-[#F59E0B] inline-flex items-center gap-2",
+      "failed": "font-mono text-xs uppercase px-2 py-1 border-2 border-[#EF4444] bg-[#EF4444]/10 text-[#EF4444] inline-flex items-center gap-2"
+    },
+    "tables": "w-full text-left border-collapse border-2 border-[#09090B]. th and td should have border-b-2 border-r-2 border-[#09090B].",
+    "navigation": "Sticky top nav with glassmorphism surface, 2px bottom border, high contrast logo.",
+    "code_block": "font-mono bg-[#F4F4F5] border-2 border-[#09090B] p-4 text-sm relative group"
+  },
+  "animations": {
+    "hover": "Harsh, instant transitions or brutalist push-down effects (shadow disappears, element moves down). Duration 100ms.",
+    "loading": "Monospace ASCII blinking cursor `_` or raw text `LOADING...`.",
+    "page_transition": "None. Keep it raw and instant."
+  },
+  "assets": {
+    "icons": {
+      "library": "@phosphor-icons/react",
+      "style": "Bold or Duotone, 24px default size, strict black or accent colors."
+    },
+    "images": [
+      {
+        "category": "hero_graphic",
+        "url": "https://static.prod-images.emergentagent.com/jobs/4b86198a-b253-4d7f-a9d0-0fbc3bd669b6/images/49866687ee1107678c74f8f04629e5a43af7b0daf938f58bbac23adc278647c9.png",
+        "description": "High-contrast Swiss style poster, black and white with one bold Klein Blue accent. Use this in the landing page hero section."
+      },
+      {
+        "category": "campaign_background",
+        "url": "https://static.prod-images.emergentagent.com/jobs/4b86198a-b253-4d7f-a9d0-0fbc3bd669b6/images/f2870b60543248b612899acf53e7163eb04a52234fbf616e09d57812d3fa5688.png",
+        "description": "Abstract data visualization, black grids on white background. Good for empty states or dashboard intro panels."
+      },
+      {
+        "category": "texture_abstract",
+        "url": "https://images.pexels.com/photos/1187301/pexels-photo-1187301.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+        "description": "Dynamic black and white diagonal stripes. Useful for decorative banners or footer backgrounds."
+      }
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Ensure all interactive elements have data-testid attributes formatted in kebab-case (e.g., data-testid='verify-account-btn').",
+    "Use pure HTML + Tailwind for the marketing landing page, prioritizing grid asymmetry and the Swiss Brutalism look.",
+    "Use Shadcn components for the dashboard, but HEAVILY CUSTOMIZE them. Strip all rounded corners (use rounded-none), remove soft gray shadows, and apply solid 2px black borders with solid block drop shadows.",
+    "Use JetBrains Mono or a similar monospace font for the verification codes the user must paste in their bio.",
+    "Do not use generic gray gradients. Stick to stark white, black borders, and pure accent colors.",
+    "Implement brutalist hover states: transform translate to mimic pressing a physical button with solid black drop shadows.",
+    "For the 'how to use' slash commands guide, display them like terminal inputs in monospace blocks."
+  ]
+}
