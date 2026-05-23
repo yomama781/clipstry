@@ -6,6 +6,8 @@ limitation to users.
 """
 import re
 import json
+import asyncio
+import time
 import logging
 from typing import Optional, Tuple
 import httpx
@@ -24,6 +26,13 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
+
+# TikWM enforces 1 request/second on the free tier. We serialize all calls
+# through a single lock + minimum 1.2s spacing so concurrent submissions queue
+# up instead of failing.
+_TIKWM_LOCK = asyncio.Lock()
+_TIKWM_MIN_GAP_S = 1.2
+_tikwm_last_call_at = 0.0
 
 
 def normalize_handle(platform: str, raw: str) -> str:
@@ -117,35 +126,50 @@ def _parse_views(html: str) -> Optional[int]:
 async def fetch_tiktok_views(post_url: str) -> Optional[int]:
     """Use the free TikWM endpoint to get accurate TikTok play counts.
 
-    Free tier is limited to ~1 request/second, so we retry once after a short
-    backoff if we get rate-limited.
+    Serialized through a global lock with 1.2s spacing so we never exceed the
+    free-tier 1 req/sec limit. Retries up to 3 times on transient errors.
     """
-    import asyncio as _asyncio
-
+    global _tikwm_last_call_at
     api = "https://www.tikwm.com/api/"
-    for attempt in range(2):
-        try:
-            async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
-                r = await client.get(api, params={"url": post_url, "hd": 0})
+
+    for attempt in range(3):
+        async with _TIKWM_LOCK:
+            now = time.monotonic()
+            wait = _TIKWM_MIN_GAP_S - (now - _tikwm_last_call_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
+                    r = await client.get(api, params={"url": post_url, "hd": 0})
+                _tikwm_last_call_at = time.monotonic()
                 if r.status_code >= 400:
-                    logger.warning("TikWM %s -> %s", post_url, r.status_code)
+                    logger.warning("TikWM HTTP %s for %s", r.status_code, post_url)
+                    if r.status_code in (429, 503) and attempt < 2:
+                        await asyncio.sleep(2)
+                        continue
                     return None
                 payload = r.json()
-                if payload.get("code") == 0:
-                    data = payload.get("data") or {}
-                    views = data.get("play_count")
-                    if isinstance(views, int):
-                        return views
-                    return None
-                msg = (payload.get("msg") or "").lower()
-                if "limit" in msg and attempt == 0:
-                    await _asyncio.sleep(1.2)
+            except Exception as e:
+                _tikwm_last_call_at = time.monotonic()
+                logger.warning("TikWM request error: %s", e)
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
                     continue
-                logger.warning("TikWM error: %s", payload.get("msg"))
                 return None
-        except Exception as e:
-            logger.warning("TikWM request failed for %s: %s", post_url, e)
+
+        if payload.get("code") == 0:
+            data = payload.get("data") or {}
+            views = data.get("play_count")
+            if isinstance(views, int):
+                return views
             return None
+        msg = (payload.get("msg") or "").lower()
+        if "limit" in msg and attempt < 2:
+            logger.info("TikWM rate-limited, retry %d/3", attempt + 2)
+            await asyncio.sleep(1.5)
+            continue
+        logger.warning("TikWM API error: %s", payload.get("msg"))
+        return None
     return None
 
 
