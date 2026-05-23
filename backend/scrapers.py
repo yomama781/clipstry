@@ -388,11 +388,11 @@ async def fetch_tiktok_views(post_url: str) -> Optional[int]:
 
 async def fetch_post_views(platform: str, post_url: str) -> Optional[int]:
     if platform == "tiktok":
-        views = await fetch_tiktok_views(post_url)
+        # Apify primary (more reliable), TikWM as free fallback
+        views = await fetch_apify_tiktok_views(post_url)
         if views is not None:
             return views
-        # TikWM blocked -> Apify fallback
-        views = await fetch_apify_tiktok_views(post_url)
+        views = await fetch_tiktok_views(post_url)
         if views is not None:
             return views
 
