@@ -51,6 +51,37 @@ def make_code() -> str:
 def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
     platform_choices = [app_commands.Choice(name=p, value=p) for p in PLATFORMS]
 
+    async def _campaign_choices(query: dict, current: str, limit: int = 25):
+        """Return up to 25 Discord autocomplete choices matching `current`."""
+        if current:
+            query = {**query, "name": {"$regex": current, "$options": "i"}}
+        items = (
+            await db.campaigns.find(query, {"_id": 0, "id": 1, "name": 1})
+            .sort("created_at", -1)
+            .to_list(limit)
+        )
+        return [
+            app_commands.Choice(name=f"{c['name']} ({c['id'][:8]})", value=c["id"])
+            for c in items
+        ]
+
+    async def active_campaign_autocomplete(
+        interaction: discord.Interaction, current: str
+    ):
+        q = {"status": "active"}
+        if interaction.guild_id:
+            q["guild_id"] = str(interaction.guild_id)
+        return await _campaign_choices(q, current)
+
+    async def my_active_campaign_autocomplete(
+        interaction: discord.Interaction, current: str
+    ):
+        q = {
+            "status": "active",
+            "creator_discord_id": str(interaction.user.id),
+        }
+        return await _campaign_choices(q, current)
+
     @tree.command(name="verify", description="Start verification of a social media account")
     @app_commands.describe(
         platform="Which platform", handle="Your @handle or profile URL"
@@ -178,7 +209,8 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
         await interaction.followup.send(embed=embed)
 
     @tree.command(name="end-campaign", description="End a campaign you created")
-    @app_commands.describe(campaign_id="Campaign ID")
+    @app_commands.describe(campaign_id="Pick one of your active campaigns")
+    @app_commands.autocomplete(campaign_id=my_active_campaign_autocomplete)
     async def end_campaign_cmd(interaction: discord.Interaction, campaign_id: str):
         await interaction.response.defer(thinking=True)
         camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
@@ -201,7 +233,10 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
         )
 
     @tree.command(name="submit", description="Submit a post URL to a campaign")
-    @app_commands.describe(campaign_id="Campaign ID", post_url="Public post URL")
+    @app_commands.describe(
+        campaign_id="Pick a campaign", post_url="Public post URL"
+    )
+    @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
     async def submit_cmd(
         interaction: discord.Interaction, campaign_id: str, post_url: str
     ):
