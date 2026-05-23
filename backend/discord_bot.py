@@ -102,18 +102,34 @@ async def grant_creator_roles(
             logger.exception("add_roles failed: %s", e)
             warnings.append(f"Role assignment error: {e}")
 
-    # Remove the "Unverified Clipper" role if the user still has it.
-    unverified = discord.utils.get(interaction.user.roles, name=UNVERIFIED_ROLE)
-    if unverified is not None:
+    # Remove any "unverified ..." role (case-insensitive match) if present.
+    unverified_roles = [
+        r for r in interaction.user.roles if "unverified" in r.name.lower()
+    ]
+    for unverified in unverified_roles:
+        if unverified >= interaction.guild.me.top_role:
+            warnings.append(
+                f"Can't remove `{unverified.name}` — it sits above the bot's role."
+            )
+            continue
         try:
-            await interaction.user.remove_roles(unverified, reason="User verified a social account")
+            await interaction.user.remove_roles(
+                unverified, reason="User verified a social account"
+            )
+            logger.info("Removed role %s from %s", unverified.name, interaction.user)
         except discord.Forbidden:
             warnings.append(
-                f"Couldn't remove `{UNVERIFIED_ROLE}` (bot needs Manage Roles + a higher position)."
+                f"Couldn't remove `{unverified.name}` (bot needs Manage Roles)."
             )
         except Exception as e:
             logger.exception("remove_roles failed: %s", e)
-            warnings.append(f"Could not remove `{UNVERIFIED_ROLE}`: {e}")
+            warnings.append(f"Could not remove `{unverified.name}`: {e}")
+    if not unverified_roles:
+        logger.info(
+            "No unverified-* role on %s; user roles: %s",
+            interaction.user,
+            [r.name for r in interaction.user.roles],
+        )
 
     return granted, warnings
 
