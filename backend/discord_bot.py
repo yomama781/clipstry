@@ -24,6 +24,7 @@ TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 
 VERIFIED_CREATOR_ROLE = "Verified Creator"
 UNVERIFIED_ROLE = "Unverified Clipper"
+CAMPAIGN_MANAGER_ROLE = "Campaign Manager"
 PLATFORM_ROLE = {
     "instagram": "Instagram Creator",
     "tiktok": "TikTok Creator",
@@ -136,6 +137,10 @@ async def grant_creator_roles(
 
 def has_verified_creator_role(member: discord.Member) -> bool:
     return any(r.name == VERIFIED_CREATOR_ROLE for r in member.roles)
+
+
+def has_campaign_manager_role(member: discord.Member) -> bool:
+    return any(r.name == CAMPAIGN_MANAGER_ROLE for r in member.roles)
 
 
 intents = discord.Intents.default()
@@ -305,6 +310,14 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
         description: Optional[str] = "",
     ):
         await interaction.response.defer(thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_campaign_manager_role(
+            interaction.user
+        ):
+            await interaction.followup.send(
+                f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to create campaigns.",
+                ephemeral=True,
+            )
+            return
         camp = {
             "id": secrets.token_hex(8),
             "name": name,
@@ -328,19 +341,22 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
         embed.add_field(name="ID", value=f"`{camp['id']}`", inline=False)
         await interaction.followup.send(embed=embed)
 
-    @tree.command(name="end-campaign", description="End a campaign you created")
-    @app_commands.describe(campaign_id="Pick one of your active campaigns")
-    @app_commands.autocomplete(campaign_id=my_active_campaign_autocomplete)
+    @tree.command(name="end-campaign", description="End a campaign (Campaign Manager only)")
+    @app_commands.describe(campaign_id="Pick an active campaign")
+    @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
     async def end_campaign_cmd(interaction: discord.Interaction, campaign_id: str):
         await interaction.response.defer(thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_campaign_manager_role(
+            interaction.user
+        ):
+            await interaction.followup.send(
+                f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to end campaigns.",
+                ephemeral=True,
+            )
+            return
         camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
         if not camp:
             await interaction.followup.send("Campaign not found.", ephemeral=True)
-            return
-        if camp["creator_discord_id"] != str(interaction.user.id):
-            await interaction.followup.send(
-                "Only the creator can end this campaign.", ephemeral=True
-            )
             return
         await db.campaigns.update_one(
             {"id": campaign_id},
