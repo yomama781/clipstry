@@ -26,10 +26,10 @@ VERIFIED_CREATOR_ROLE = "Verified Creator"
 UNVERIFIED_ROLE = "Unverified Clipper"
 CAMPAIGN_MANAGER_ROLE = "Campaign Manager"
 PLATFORM_ROLE = {
-    "instagram": "Instagram Creator",
-    "tiktok": "TikTok Creator",
-    "twitter": "Twitter/X Creator",
-    "youtube": "YouTube Shorts Creator",
+    "instagram": "Instagram Clipper",
+    "tiktok": "TikTok Clipper",
+    "twitter": "X Clipper",
+    "youtube": "YouTube Clipper",
 }
 ROLE_COLOR = {
     "instagram": 0xE1306C,
@@ -242,7 +242,8 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
             upsert=True,
         )
         msg = (
-            f"**Step 1.** Paste this code anywhere in your `{plat}` bio for @{norm}:\n"
+            f"**Step 1.** Tap the code below to copy it (long-press on mobile), "
+            f"then paste it **anywhere in your `{plat}` bio** for @{norm}:\n"
             f"```\n{code}\n```\n"
             f"**Step 2.** Run `/verify-check platform:{plat} handle:{norm}` to confirm."
         )

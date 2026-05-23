@@ -176,18 +176,41 @@ export default function Dashboard() {
                   {!a.verified && (
                     <>
                       <div className="font-mono text-xs uppercase text-zinc-500 mb-2">
-                        Paste this in your bio:
+                        Click code to copy, then paste in your bio:
                       </div>
-                      <div
-                        className="code-block flex items-center justify-between cursor-pointer mb-4"
+                      <button
+                        type="button"
+                        className={`code-block flex items-center justify-between mb-4 w-full text-left transition-all ${
+                          copiedId === a.id
+                            ? "bg-[#10B981]/10 border-[#10B981]"
+                            : "hover:bg-[#002FA7] hover:text-white"
+                        }`}
                         onClick={() => copyCode(a.id, a.verification_code)}
                         data-testid={`account-code-${a.id}`}
+                        title="Click to copy"
                       >
-                        <span>{a.verification_code}</span>
-                        <span className="text-xs text-zinc-500 ml-2">
-                          {copiedId === a.id ? "COPIED" : "CLICK TO COPY"}
+                        <span className="text-lg font-bold tracking-wider">
+                          {a.verification_code}
                         </span>
-                      </div>
+                        <span className="text-xs uppercase ml-2 flex items-center gap-1.5">
+                          {copiedId === a.id ? (
+                            <>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                              COPIED!
+                            </>
+                          ) : (
+                            <>
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                <rect x="9" y="9" width="13" height="13" rx="2" />
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                              </svg>
+                              COPY
+                            </>
+                          )}
+                        </span>
+                      </button>
                       <div className="flex gap-3">
                         <button
                           onClick={() => verifyNow(a.id)}
