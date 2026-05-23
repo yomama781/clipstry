@@ -22,6 +22,106 @@ logger = logging.getLogger("discord_bot")
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
 
+VERIFIED_CREATOR_ROLE = "Verified Creator"
+UNVERIFIED_ROLE = "Unverified Clipper"
+PLATFORM_ROLE = {
+    "instagram": "Instagram Creator",
+    "tiktok": "TikTok Creator",
+    "twitter": "Twitter/X Creator",
+    "youtube": "YouTube Shorts Creator",
+}
+ROLE_COLOR = {
+    "instagram": 0xE1306C,
+    "tiktok": 0x000000,
+    "twitter": 0x1DA1F2,
+    "youtube": 0xFF0000,
+    VERIFIED_CREATOR_ROLE: 0x002FA7,
+}
+
+
+async def _get_or_create_role(guild: discord.Guild, name: str) -> Optional[discord.Role]:
+    """Look up a role by name, creating it (with a thematic colour) if missing."""
+    role = discord.utils.get(guild.roles, name=name)
+    if role is not None:
+        return role
+    try:
+        colour_int = ROLE_COLOR.get(name, 0x808080)
+        return await guild.create_role(
+            name=name,
+            colour=discord.Colour(colour_int),
+            mentionable=True,
+            reason="Auto-created by ViewTracker on verification",
+        )
+    except discord.Forbidden:
+        logger.warning("Missing Manage Roles permission in guild %s", guild.id)
+        return None
+    except Exception as e:
+        logger.exception("Failed to create role %s: %s", name, e)
+        return None
+
+
+async def grant_creator_roles(
+    interaction: discord.Interaction, platform: str
+) -> tuple[list[str], list[str]]:
+    """Assign the platform-specific role + 'Verified Creator' umbrella role.
+
+    Returns (granted_role_names, warnings).
+    """
+    granted: list[str] = []
+    warnings: list[str] = []
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        warnings.append("Run this in a server to receive your creator role.")
+        return granted, warnings
+
+    target_names = [PLATFORM_ROLE.get(platform), VERIFIED_CREATOR_ROLE]
+    roles_to_add: list[discord.Role] = []
+    for name in target_names:
+        if not name:
+            continue
+        role = await _get_or_create_role(interaction.guild, name)
+        if role is None:
+            warnings.append(
+                f"Could not create/find `{name}` (bot needs **Manage Roles**)."
+            )
+            continue
+        if role >= interaction.guild.me.top_role:
+            warnings.append(
+                f"`{name}` is positioned above the bot's role — move the bot's role higher in Server Settings → Roles."
+            )
+            continue
+        if role not in interaction.user.roles:
+            roles_to_add.append(role)
+        granted.append(name)
+
+    if roles_to_add:
+        try:
+            await interaction.user.add_roles(*roles_to_add, reason="Social account verified")
+        except discord.Forbidden:
+            warnings.append("Bot lacks permission to assign roles.")
+        except Exception as e:
+            logger.exception("add_roles failed: %s", e)
+            warnings.append(f"Role assignment error: {e}")
+
+    # Remove the "Unverified Clipper" role if the user still has it.
+    unverified = discord.utils.get(interaction.user.roles, name=UNVERIFIED_ROLE)
+    if unverified is not None:
+        try:
+            await interaction.user.remove_roles(unverified, reason="User verified a social account")
+        except discord.Forbidden:
+            warnings.append(
+                f"Couldn't remove `{UNVERIFIED_ROLE}` (bot needs Manage Roles + a higher position)."
+            )
+        except Exception as e:
+            logger.exception("remove_roles failed: %s", e)
+            warnings.append(f"Could not remove `{UNVERIFIED_ROLE}`: {e}")
+
+    return granted, warnings
+
+
+def has_verified_creator_role(member: discord.Member) -> bool:
+    return any(r.name == VERIFIED_CREATOR_ROLE for r in member.roles)
+
+
 intents = discord.Intents.default()
 intents.message_content = True
 
@@ -160,10 +260,14 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
                 {"id": doc["id"]},
                 {"$set": {"verified": True, "verified_at": datetime.now(timezone.utc).isoformat()}},
             )
-            await interaction.followup.send(
-                f"VERIFIED `{plat}/@{norm}`. You can now submit posts to campaigns.",
-                ephemeral=True,
-            )
+            granted, warnings = await grant_creator_roles(interaction, plat)
+            lines = [f"**VERIFIED** `{plat}/@{norm}`."]
+            if granted:
+                lines.append("Roles granted: " + ", ".join(f"`{g}`" for g in granted))
+            for w in warnings:
+                lines.append(":warning: " + w)
+            lines.append("You can now submit posts with `/submit`.")
+            await interaction.followup.send("\n".join(lines), ephemeral=True)
         else:
             await interaction.followup.send(
                 f"Code `{code}` not found in your bio yet. Bio fetched:\n```\n{bio[:300]}\n```",
@@ -241,6 +345,15 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
         interaction: discord.Interaction, campaign_id: str, post_url: str
     ):
         await interaction.response.defer(ephemeral=True, thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_verified_creator_role(
+            interaction.user
+        ):
+            await interaction.followup.send(
+                f"You need the **{VERIFIED_CREATOR_ROLE}** role to submit. "
+                "Run `/verify` then `/verify-check` to earn it.",
+                ephemeral=True,
+            )
+            return
         camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
         if not camp:
             await interaction.followup.send("Campaign not found.", ephemeral=True)
