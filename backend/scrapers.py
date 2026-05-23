@@ -27,6 +27,108 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
 }
 
+# Apify is used as a more reliable fallback (paid, but free tier covers many
+# requests/month). When the token is missing, the Apify path is skipped.
+import os as _os
+APIFY_TOKEN = _os.environ.get("APIFY_API_TOKEN", "").strip()
+APIFY_TIKTOK_ACTOR = "clockworks~tiktok-scraper"
+APIFY_INSTAGRAM_ACTOR = "apify~instagram-scraper"
+
+
+async def _apify_run(actor: str, payload: dict, timeout_s: int = 90) -> Optional[list]:
+    """Run an Apify actor synchronously and return its dataset items."""
+    if not APIFY_TOKEN:
+        return None
+    url = (
+        f"https://api.apify.com/v2/acts/{actor}"
+        f"/run-sync-get-dataset-items?token={APIFY_TOKEN}&timeout={timeout_s}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=timeout_s + 10) as client:
+            r = await client.post(url, json=payload)
+        if r.status_code >= 400:
+            logger.warning("Apify %s -> HTTP %s: %s", actor, r.status_code, r.text[:200])
+            return None
+        data = r.json()
+        if isinstance(data, list):
+            return data
+        logger.warning("Apify %s returned non-list: %r", actor, data)
+        return None
+    except Exception as e:
+        logger.warning("Apify %s error: %s", actor, e)
+        return None
+
+
+async def fetch_apify_tiktok_bio(handle: str) -> Optional[str]:
+    handle = normalize_handle("tiktok", handle)
+    items = await _apify_run(
+        APIFY_TIKTOK_ACTOR,
+        {
+            "profiles": [handle],
+            "resultsPerPage": 1,
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+            "shouldDownloadSubtitles": False,
+        },
+    )
+    if not items:
+        return None
+    sig = (items[0].get("authorMeta") or {}).get("signature")
+    return sig if isinstance(sig, str) else ""
+
+
+async def fetch_apify_tiktok_views(post_url: str) -> Optional[int]:
+    items = await _apify_run(
+        APIFY_TIKTOK_ACTOR,
+        {
+            "postURLs": [post_url],
+            "shouldDownloadVideos": False,
+            "shouldDownloadCovers": False,
+            "shouldDownloadSubtitles": False,
+        },
+    )
+    if not items:
+        return None
+    pc = items[0].get("playCount")
+    return pc if isinstance(pc, int) else None
+
+
+async def fetch_apify_instagram_bio(handle: str) -> Optional[str]:
+    handle = normalize_handle("instagram", handle)
+    items = await _apify_run(
+        APIFY_INSTAGRAM_ACTOR,
+        {
+            "directUrls": [f"https://www.instagram.com/{handle}/"],
+            "resultsType": "details",
+            "resultsLimit": 1,
+        },
+    )
+    if not items:
+        return None
+    item = items[0]
+    return item.get("biography") or item.get("bio") or ""
+
+
+async def fetch_apify_instagram_views(post_url: str) -> Optional[int]:
+    items = await _apify_run(
+        APIFY_INSTAGRAM_ACTOR,
+        {
+            "directUrls": [post_url],
+            "resultsType": "posts",
+            "resultsLimit": 1,
+        },
+    )
+    if not items:
+        return None
+    item = items[0]
+    # IG reels use "videoViewCount", posts use "videoPlayCount", carousels lack views
+    for key in ("videoPlayCount", "videoViewCount", "playCount"):
+        v = item.get(key)
+        if isinstance(v, int):
+            return v
+    return None
+
+
 # TikWM enforces 1 request/second on the free tier. We serialize all calls
 # through a single lock + minimum 1.2s spacing so concurrent submissions queue
 # up instead of failing.
@@ -119,9 +221,20 @@ async def fetch_bio(platform: str, handle: str) -> Optional[str]:
     """Return the bio/description text for a public profile."""
     if platform == "tiktok":
         bio = await fetch_tiktok_bio(handle)
+        if bio:
+            return bio
+        # TikWM blocked/empty -> Apify fallback
+        bio = await fetch_apify_tiktok_bio(handle)
         if bio is not None:
             return bio
-        # fall through to HTML scrape as a safety net
+        # Fall through to HTML scrape as a last resort.
+
+    if platform == "instagram":
+        # Instagram blocks server IPs from HTML scrapes almost always; go to
+        # Apify first.
+        bio = await fetch_apify_instagram_bio(handle)
+        if bio is not None:
+            return bio
 
     url = profile_url(platform, handle)
     html = await _fetch(url)
@@ -227,7 +340,16 @@ async def fetch_post_views(platform: str, post_url: str) -> Optional[int]:
         views = await fetch_tiktok_views(post_url)
         if views is not None:
             return views
-        # fall through to HTML scrape as a safety net
+        # TikWM blocked -> Apify fallback
+        views = await fetch_apify_tiktok_views(post_url)
+        if views is not None:
+            return views
+
+    if platform == "instagram":
+        views = await fetch_apify_instagram_views(post_url)
+        if views is not None:
+            return views
+
     html = await _fetch(post_url)
     if not html:
         return None
