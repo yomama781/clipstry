@@ -114,7 +114,47 @@ def _parse_views(html: str) -> Optional[int]:
     return None
 
 
+async def fetch_tiktok_views(post_url: str) -> Optional[int]:
+    """Use the free TikWM endpoint to get accurate TikTok play counts.
+
+    Free tier is limited to ~1 request/second, so we retry once after a short
+    backoff if we get rate-limited.
+    """
+    import asyncio as _asyncio
+
+    api = "https://www.tikwm.com/api/"
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
+                r = await client.get(api, params={"url": post_url, "hd": 0})
+                if r.status_code >= 400:
+                    logger.warning("TikWM %s -> %s", post_url, r.status_code)
+                    return None
+                payload = r.json()
+                if payload.get("code") == 0:
+                    data = payload.get("data") or {}
+                    views = data.get("play_count")
+                    if isinstance(views, int):
+                        return views
+                    return None
+                msg = (payload.get("msg") or "").lower()
+                if "limit" in msg and attempt == 0:
+                    await _asyncio.sleep(1.2)
+                    continue
+                logger.warning("TikWM error: %s", payload.get("msg"))
+                return None
+        except Exception as e:
+            logger.warning("TikWM request failed for %s: %s", post_url, e)
+            return None
+    return None
+
+
 async def fetch_post_views(platform: str, post_url: str) -> Optional[int]:
+    if platform == "tiktok":
+        views = await fetch_tiktok_views(post_url)
+        if views is not None:
+            return views
+        # fall through to HTML scrape as a safety net
     html = await _fetch(post_url)
     if not html:
         return None
