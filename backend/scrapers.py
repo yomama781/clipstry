@@ -33,6 +33,13 @@ import os as _os
 APIFY_TOKEN = _os.environ.get("APIFY_API_TOKEN", "").strip()
 APIFY_TIKTOK_ACTOR = "clockworks~tiktok-scraper"
 APIFY_INSTAGRAM_ACTOR = "apify~instagram-scraper"
+APIFY_TWITTER_PROFILE_ACTOR = "pratikdani~twitter-profile-scraper"
+APIFY_TWITTER_TWEET_ACTOR = "kaitoeasyapi~twitter-x-data-tweet-scraper-pay-per-result-cheapest"
+
+
+def _tweet_id_from_url(url: str) -> Optional[str]:
+    m = re.search(r"/status(?:es)?/(\d+)", url)
+    return m.group(1) if m else None
 
 
 async def _apify_run(actor: str, payload: dict, timeout_s: int = 90) -> Optional[list]:
@@ -125,6 +132,44 @@ async def fetch_apify_instagram_views(post_url: str) -> Optional[int]:
     for key in ("videoPlayCount", "videoViewCount", "playCount"):
         v = item.get(key)
         if isinstance(v, int):
+            return v
+    return None
+
+
+async def fetch_apify_twitter_bio(handle: str) -> Optional[str]:
+    handle = normalize_handle("twitter", handle)
+    items = await _apify_run(
+        APIFY_TWITTER_PROFILE_ACTOR,
+        {"url": f"https://x.com/{handle}"},
+    )
+    if not items:
+        return None
+    item = items[0]
+    return item.get("desc") or item.get("description") or item.get("bio") or ""
+
+
+async def fetch_apify_twitter_views(post_url: str) -> Optional[int]:
+    tweet_id = _tweet_id_from_url(post_url)
+    if not tweet_id:
+        return None
+    items = await _apify_run(
+        APIFY_TWITTER_TWEET_ACTOR,
+        {"tweetIDs": [tweet_id], "maxItems": 20},
+    )
+    if not items:
+        return None
+    # The actor returns padding items with id="-1"; find the real match.
+    for item in items:
+        if str(item.get("id")) == tweet_id:
+            v = item.get("viewCount") or item.get("views")
+            if isinstance(v, int):
+                return v
+    # Fallback: any item with a non-trivial viewCount
+    for item in items:
+        if str(item.get("id", "-1")) == "-1":
+            continue
+        v = item.get("viewCount") or item.get("views")
+        if isinstance(v, int) and v > 0:
             return v
     return None
 
@@ -233,6 +278,12 @@ async def fetch_bio(platform: str, handle: str) -> Optional[str]:
         # Instagram blocks server IPs from HTML scrapes almost always; go to
         # Apify first.
         bio = await fetch_apify_instagram_bio(handle)
+        if bio is not None:
+            return bio
+
+    if platform == "twitter":
+        # X aggressively blocks unauthenticated HTML; Apify is the only way.
+        bio = await fetch_apify_twitter_bio(handle)
         if bio is not None:
             return bio
 
@@ -347,6 +398,11 @@ async def fetch_post_views(platform: str, post_url: str) -> Optional[int]:
 
     if platform == "instagram":
         views = await fetch_apify_instagram_views(post_url)
+        if views is not None:
+            return views
+
+    if platform == "twitter":
+        views = await fetch_apify_twitter_views(post_url)
         if views is not None:
             return views
 
