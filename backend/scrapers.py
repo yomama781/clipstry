@@ -72,8 +72,57 @@ async def _fetch(url: str) -> Optional[str]:
         return None
 
 
+async def fetch_tiktok_bio(handle: str) -> Optional[str]:
+    """Fetch a TikTok bio via the TikWM user-info endpoint (no auth needed)."""
+    global _tikwm_last_call_at
+    api = "https://www.tikwm.com/api/user/info"
+    handle = normalize_handle("tiktok", handle)
+    for attempt in range(3):
+        async with _TIKWM_LOCK:
+            wait = _TIKWM_MIN_GAP_S - (time.monotonic() - _tikwm_last_call_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                async with httpx.AsyncClient(timeout=15.0, headers=HEADERS) as client:
+                    r = await client.get(api, params={"unique_id": handle})
+                _tikwm_last_call_at = time.monotonic()
+                payload = r.json()
+            except Exception as e:
+                _tikwm_last_call_at = time.monotonic()
+                logger.warning("TikWM user/info error: %s", e)
+                if attempt < 2:
+                    await asyncio.sleep(1.5)
+                    continue
+                return None
+        if payload.get("code") == 0:
+            data = payload.get("data") or {}
+            # The bio lives under data.user.signature
+            user = data.get("user") or {}
+            sig = user.get("signature")
+            if isinstance(sig, str):
+                return sig
+            # Some responses put signature one level up
+            sig = data.get("signature")
+            if isinstance(sig, str):
+                return sig
+            return ""  # empty bio is a valid response
+        msg = (payload.get("msg") or "").lower()
+        if "limit" in msg and attempt < 2:
+            await asyncio.sleep(1.5)
+            continue
+        logger.warning("TikWM user/info failed: %s", payload.get("msg"))
+        return None
+    return None
+
+
 async def fetch_bio(platform: str, handle: str) -> Optional[str]:
     """Return the bio/description text for a public profile."""
+    if platform == "tiktok":
+        bio = await fetch_tiktok_bio(handle)
+        if bio is not None:
+            return bio
+        # fall through to HTML scrape as a safety net
+
     url = profile_url(platform, handle)
     html = await _fetch(url)
     if not html:
