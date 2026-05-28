@@ -11,6 +11,7 @@ from discord import app_commands
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
 from scrapers import (
+    APIFY_TOKEN,
     PLATFORMS,
     fetch_bio,
     fetch_post_views,
@@ -162,6 +163,12 @@ class ViewTrackerBot(discord.Client):
             logger.exception("Slash sync failed: %s", e)
 
     async def on_ready(self):
+        await self.change_presence(
+            activity=discord.Activity(
+                type=discord.ActivityType.playing,
+                name="future of clipping - signed by the goat 1144",
+            )
+        )
         logger.info("Discord bot logged in as %s (id=%s)", self.user, self.user.id)
 
 
@@ -202,6 +209,201 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
             "creator_discord_id": str(interaction.user.id),
         }
         return await _campaign_choices(q, current)
+
+    view_tracker_action_choices = [
+        app_commands.Choice(name="link", value="link"),
+        app_commands.Choice(name="unlink", value="unlink"),
+        app_commands.Choice(name="status", value="status"),
+    ]
+
+    review_channel_action_choices = [
+        app_commands.Choice(name="link", value="link"),
+        app_commands.Choice(name="unlink", value="unlink"),
+        app_commands.Choice(name="status", value="status"),
+    ]
+
+    async def _tracker_total_views(
+        campaign_id: Optional[str] = None, guild_id: Optional[str] = None
+    ) -> int:
+        match = {"status": "accepted"}
+        if guild_id:
+            match["guild_id"] = guild_id
+        elif campaign_id:
+            match["campaign_id"] = campaign_id
+        else:
+            return 0
+        agg = await db.submissions.aggregate(
+            [
+                {"$match": match},
+                {"$group": {"_id": None, "total": {"$sum": "$current_views"}}},
+            ]
+        ).to_list(1)
+        return int(agg[0]["total"]) if agg else 0
+
+    async def _refresh_view_tracker_channel(
+        interaction: discord.Interaction, config: dict
+    ):
+        if interaction.guild is None:
+            return
+        if not config.get("channel_id"):
+            return
+        channel = interaction.guild.get_channel(int(config["channel_id"]))
+        if not isinstance(channel, discord.VoiceChannel):
+            return
+        views = await _tracker_total_views(
+            campaign_id=config.get("campaign_id"), guild_id=config.get("guild_id")
+        )
+        prefix = config.get("channel_name_prefix") or channel.name.split(" | ")[0]
+        new_name = f"{prefix} | {views:,} views"
+        if channel.name != new_name:
+            try:
+                await channel.edit(name=new_name, reason="Update view tracker count")
+            except Exception as e:
+                logger.warning("Failed to update view tracker channel name: %s", e)
+
+    async def _refresh_all_view_tracker_channels(
+        interaction: discord.Interaction, guild_id: str
+    ):
+        if interaction.guild is None:
+            return
+        configs = await db.view_trackers.find({"guild_id": guild_id}).to_list(50)
+        for config in configs:
+            await _refresh_view_tracker_channel(interaction, config)
+
+    async def _get_review_channel(
+        interaction: discord.Interaction, campaign_id: str
+    ) -> Optional[discord.TextChannel]:
+        if interaction.guild is None:
+            return None
+        config = await db.view_trackers.find_one(
+            {"campaign_id": campaign_id}, {"_id": 0, "review_channel_id": 1}
+        )
+        if not config or not config.get("review_channel_id"):
+            return None
+        channel = interaction.guild.get_channel(int(config["review_channel_id"]))
+        return channel if isinstance(channel, discord.TextChannel) else None
+
+    async def _notify_submitter(
+        interaction: discord.Interaction, discord_id: str, accepted: bool, campaign_name: str, post_url: str
+    ):
+        try:
+            user = await interaction.client.fetch_user(int(discord_id))
+            if accepted:
+                await user.send(
+                    f"Your submission for campaign **{campaign_name}** has been accepted.\n"
+                    f"Post: {post_url}"
+                )
+            else:
+                await user.send(
+                    f"Your submission for campaign **{campaign_name}** has been denied.\n"
+                    f"Post: {post_url}"
+                )
+        except Exception as e:
+            logger.warning("Failed to notify submitter %s: %s", discord_id, e)
+
+    class ReviewView(discord.ui.View):
+        def __init__(self, submission_id: str, submitter_id: str, campaign_name: str, campaign_id: str):
+            super().__init__(timeout=None)
+            self.submission_id = submission_id
+            self.submitter_id = submitter_id
+            self.campaign_name = campaign_name
+            self.campaign_id = campaign_id
+            accept = discord.ui.Button(label="Accept", style=discord.ButtonStyle.success)
+            deny = discord.ui.Button(label="Deny", style=discord.ButtonStyle.danger)
+            accept.callback = self.accept
+            deny.callback = self.deny
+            self.add_item(accept)
+            self.add_item(deny)
+
+        async def accept(self, interaction: discord.Interaction):
+            if not isinstance(interaction.user, discord.Member) or not has_campaign_manager_role(
+                interaction.user
+            ):
+                await interaction.response.send_message(
+                    "Only members with the Campaign Manager role can review submissions.",
+                    ephemeral=True,
+                )
+                return
+            # Defer immediately to acknowledge the interaction and avoid the
+            # "interaction failed" message if DB/network calls are slow.
+            await interaction.response.defer(ephemeral=True)
+
+            sub = await db.submissions.find_one({"id": self.submission_id}, {"_id": 0})
+            if not sub:
+                await interaction.followup.send("Submission not found.", ephemeral=True)
+                return
+            if sub.get("status") != "pending":
+                await interaction.followup.send(
+                    "This submission has already been reviewed.", ephemeral=True
+                )
+                return
+            await db.submissions.update_one(
+                {"id": self.submission_id},
+                {"$set": {"status": "accepted", "reviewed_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            try:
+                await interaction.message.edit(
+                    content=f"✅ Submission accepted by {interaction.user.display_name}.",
+                    embed=None,
+                    view=None,
+                )
+            except Exception:
+                # Best-effort: if editing the message fails, still proceed.
+                logger.exception("Failed to edit submission review message after accept")
+            await _notify_submitter(
+                interaction,
+                self.submitter_id,
+                True,
+                self.campaign_name,
+                sub["post_url"],
+            )
+            if interaction.guild_id is not None:
+                await _refresh_all_view_tracker_channels(interaction, str(interaction.guild_id))
+
+        async def deny(self, interaction: discord.Interaction):
+            if not isinstance(interaction.user, discord.Member) or not has_campaign_manager_role(
+                interaction.user
+            ):
+                await interaction.response.send_message(
+                    "Only members with the Campaign Manager role can review submissions.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer(ephemeral=True)
+
+            sub = await db.submissions.find_one({"id": self.submission_id}, {"_id": 0})
+            if not sub:
+                await interaction.followup.send("Submission not found.", ephemeral=True)
+                return
+            if sub.get("status") != "pending":
+                await interaction.followup.send(
+                    "This submission has already been reviewed.", ephemeral=True
+                )
+                return
+            await db.submissions.update_one(
+                {"id": self.submission_id},
+                {"$set": {"status": "denied", "reviewed_at": datetime.now(timezone.utc).isoformat()}},
+            )
+            try:
+                await interaction.message.edit(
+                    content=f"❌ Submission denied by {interaction.user.display_name}.",
+                    embed=None,
+                    view=None,
+                )
+            except Exception:
+                logger.exception("Failed to edit submission review message after deny")
+            await _notify_submitter(
+                interaction,
+                self.submitter_id,
+                False,
+                self.campaign_name,
+                sub["post_url"],
+            )
+
+    payment_method_choices = [
+        app_commands.Choice(name="PayPal", value="paypal"),
+        app_commands.Choice(name="Solana", value="solana"),
+    ]
 
     @tree.command(name="verify", description="Start verification of a social media account")
     @app_commands.describe(
@@ -249,7 +451,7 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
         )
         await interaction.followup.send(msg, ephemeral=True)
 
-    @tree.command(name="verify-check", description="Check that your verification code is in your bio")
+    @tree.command(name="verify-check", description="Check that your verification code is in your bio (TikTok uses Apify first)")
     @app_commands.describe(platform="Platform", handle="Your @handle")
     @app_commands.choices(platform=platform_choices)
     async def verify_check_cmd(
@@ -269,12 +471,25 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
                 "No pending verification. Use `/verify` first.", ephemeral=True
             )
             return
-        bio = await fetch_bio(plat, norm)
+        try:
+            bio = await asyncio.wait_for(fetch_bio(plat, norm), timeout=12.0)
+        except asyncio.TimeoutError:
+            logger.warning("fetch_bio timed out for %s @%s", plat, norm)
+            bio = None
         if bio is None:
-            await interaction.followup.send(
-                "Couldn't fetch your profile (private or platform blocked the request). Try again later.",
-                ephemeral=True,
-            )
+            if plat == "tiktok":
+                msg = (
+                    "Couldn't fetch your TikTok profile. "
+                    "This verification checks TikTok bios via Apify first, so make sure your profile is public and try again later."
+                )
+                if not APIFY_TOKEN:
+                    msg += (
+                        "\n\nAlso, APIFY_API_TOKEN is not configured for this server, "
+                        "so TikTok bio fetching may be limited."
+                    )
+            else:
+                msg = "Couldn't fetch your profile (private or platform blocked the request). Try again later."
+            await interaction.followup.send(msg, ephemeral=True)
             return
         code = doc["verification_code"]
         if code in bio:
@@ -415,7 +630,12 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
                 ephemeral=True,
             )
             return
-        views = await fetch_post_views(plat, post_url) or 0
+        try:
+            views = await asyncio.wait_for(fetch_post_views(plat, post_url), timeout=12.0)
+            views = views or 0
+        except asyncio.TimeoutError:
+            logger.warning("fetch_post_views timed out for %s", post_url)
+            views = 0
         sub = {
             "id": secrets.token_hex(8),
             "campaign_id": campaign_id,
@@ -425,12 +645,238 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
             "platform": plat,
             "post_url": post_url,
             "current_views": views,
+            "status": "pending",
             "last_checked": datetime.now(timezone.utc).isoformat(),
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
         await db.submissions.insert_one(sub)
         await interaction.followup.send(
-            f"Submitted to **{camp['name']}**. Current views: **{views:,}**.",
+            "Your video has been submitted and the Clipstry team will review it shortly.",
+            ephemeral=True,
+        )
+        review_channel = await _get_review_channel(interaction, campaign_id)
+        embed = discord.Embed(
+            title="New submission pending review",
+            description=(
+                f"**Campaign:** {camp['name']}\n"
+                f"**Submitted by:** {interaction.user.mention}\n"
+                f"**Platform:** {plat}\n"
+                f"**URL:** {post_url}\n"
+                f"**Current views:** {views:,}"
+            ),
+            color=0x002FA7,
+        )
+        view = ReviewView(
+            submission_id=sub["id"],
+            submitter_id=sub["discord_id"],
+            campaign_name=camp["name"],
+            campaign_id=campaign_id,
+        )
+        if review_channel is not None:
+            await review_channel.send(embed=embed, view=view)
+        elif interaction.channel is not None:
+            await interaction.channel.send(embed=embed, view=view)
+            await interaction.followup.send(
+                "No review channel is configured for this campaign, so the submission was posted here.",
+                ephemeral=True,
+            )
+
+    @tree.command(
+        name="view-tracker",
+        description="Link a voice channel to a campaign and track its view total",
+    )
+    @app_commands.describe(
+        action="Link, unlink, or show the tracked channel",
+        campaign_id="Pick a campaign",
+        channel="Voice channel to track",
+    )
+    @app_commands.choices(action=view_tracker_action_choices)
+    @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
+    async def view_tracker_cmd(
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str],
+        campaign_id: str,
+        channel: Optional[discord.VoiceChannel] = None,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_campaign_manager_role(
+            interaction.user
+        ):
+            await interaction.followup.send(
+                f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to manage view tracking.",
+                ephemeral=True,
+            )
+            return
+        camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+        if not camp:
+            await interaction.followup.send("Campaign not found.", ephemeral=True)
+            return
+        if action.value == "link":
+            if channel is None:
+                await interaction.followup.send(
+                    "Please choose a voice channel to link.", ephemeral=True
+                )
+                return
+            prefix = channel.name.split(" | ")[0]
+            total_views = await _tracker_total_views(guild_id=str(interaction.guild_id))
+            new_name = f"{prefix} | {total_views:,} views"
+            try:
+                await channel.edit(name=new_name, reason="Set view tracker channel")
+            except Exception as e:
+                logger.warning("Failed to edit voice channel name: %s", e)
+                await interaction.followup.send(
+                    "Could not update that voice channel. Make sure the bot has Manage Channels.",
+                    ephemeral=True,
+                )
+                return
+            await db.view_trackers.update_one(
+                {"campaign_id": campaign_id},
+                {
+                    "$set": {
+                        "campaign_id": campaign_id,
+                        "guild_id": str(interaction.guild_id),
+                        "channel_id": str(channel.id),
+                        "channel_name_prefix": prefix,
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+                upsert=True,
+            )
+            await interaction.followup.send(
+                f"Linked voice channel `{channel.name}` to campaign **{camp['name']}**.",
+                ephemeral=True,
+            )
+            return
+
+        if action.value == "unlink":
+            config = await db.view_trackers.find_one({"campaign_id": campaign_id}, {"_id": 0})
+            if not config:
+                await interaction.followup.send(
+                    "No view tracker channel is linked to that campaign.", ephemeral=True
+                )
+                return
+            channel_obj = interaction.guild.get_channel(int(config["channel_id"]))
+            if isinstance(channel_obj, discord.VoiceChannel):
+                try:
+                    await channel_obj.edit(
+                        name=config.get("channel_name_prefix", channel_obj.name.split(" | ")[0]),
+                        reason="Unlink view tracker channel",
+                    )
+                except Exception as e:
+                    logger.warning("Failed to restore voice channel name: %s", e)
+            await db.view_trackers.delete_one({"campaign_id": campaign_id})
+            await interaction.followup.send(
+                f"Unlinked view tracker channel from campaign **{camp['name']}**.",
+                ephemeral=True,
+            )
+            return
+
+        config = await db.view_trackers.find_one({"campaign_id": campaign_id}, {"_id": 0})
+        if not config:
+            await interaction.followup.send(
+                "No view tracker channel is linked to that campaign.", ephemeral=True
+            )
+            return
+        channel_obj = interaction.guild.get_channel(int(config["channel_id"]))
+        if not isinstance(channel_obj, discord.VoiceChannel):
+            await interaction.followup.send(
+                "The linked channel is not available or is not a voice channel.", ephemeral=True
+            )
+            return
+        views = await _tracker_total_views(guild_id=str(interaction.guild_id))
+        await interaction.followup.send(
+            f"Campaign **{camp['name']}** is linked to `{channel_obj.name}` with {views:,} total accepted views across all campaigns.",
+            ephemeral=True,
+        )
+
+    @tree.command(
+        name="review-channel",
+        description="Link a campaign to a review channel for submission moderation",
+    )
+    @app_commands.describe(
+        action="Link, unlink, or show the review channel",
+        campaign_id="Pick a campaign",
+        channel="Text channel to send submissions to",
+    )
+    @app_commands.choices(action=review_channel_action_choices)
+    @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
+    async def review_channel_cmd(
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str],
+        campaign_id: str,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_campaign_manager_role(
+            interaction.user
+        ):
+            await interaction.followup.send(
+                f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to manage review channels.",
+                ephemeral=True,
+            )
+            return
+        camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+        if not camp:
+            await interaction.followup.send("Campaign not found.", ephemeral=True)
+            return
+        if action.value == "link":
+            if channel is None:
+                await interaction.followup.send(
+                    "Please choose a text channel to link.", ephemeral=True
+                )
+                return
+            await db.view_trackers.update_one(
+                {"campaign_id": campaign_id},
+                {
+                    "$set": {
+                        "campaign_id": campaign_id,
+                        "guild_id": str(interaction.guild_id),
+                        "review_channel_id": str(channel.id),
+                        "updated_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                },
+                upsert=True,
+            )
+            await interaction.followup.send(
+                f"Linked review channel {channel.mention} to campaign **{camp['name']}**.",
+                ephemeral=True,
+            )
+            return
+        if action.value == "unlink":
+            config = await db.view_trackers.find_one(
+                {"campaign_id": campaign_id}, {"_id": 0, "review_channel_id": 1}
+            )
+            if not config or not config.get("review_channel_id"):
+                await interaction.followup.send(
+                    "No review channel is linked to that campaign.", ephemeral=True
+                )
+                return
+            await db.view_trackers.update_one(
+                {"campaign_id": campaign_id},
+                {"$unset": {"review_channel_id": ""}},
+            )
+            await interaction.followup.send(
+                f"Unlinked the review channel from campaign **{camp['name']}**.",
+                ephemeral=True,
+            )
+            return
+        config = await db.view_trackers.find_one(
+            {"campaign_id": campaign_id}, {"_id": 0, "review_channel_id": 1}
+        )
+        if not config or not config.get("review_channel_id"):
+            await interaction.followup.send(
+                "No review channel is linked to that campaign.", ephemeral=True
+            )
+            return
+        channel_obj = interaction.guild.get_channel(int(config["review_channel_id"]))
+        if not isinstance(channel_obj, discord.TextChannel):
+            await interaction.followup.send(
+                "The linked channel is not available or is not a text channel.",
+                ephemeral=True,
+            )
+            return
+        await interaction.followup.send(
+            f"Campaign **{camp['name']}** is linked to {channel_obj.mention} for submissions.",
             ephemeral=True,
         )
 
@@ -455,6 +901,114 @@ def register_commands(tree: app_commands.CommandTree, db: AsyncIOMotorDatabase):
                 inline=False,
             )
         await interaction.followup.send(embed=embed)
+
+    @tree.command(name="payment-method", description="Set your payout payment method")
+    @app_commands.describe(
+        method="Pick PayPal or Solana",
+        address="PayPal email or Solana wallet address",
+    )
+    @app_commands.choices(method=payment_method_choices)
+    async def payment_method_cmd(
+        interaction: discord.Interaction,
+        method: app_commands.Choice[str],
+        address: str,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.followup.send(
+                "This command must be used in a server or with a Discord member.",
+                ephemeral=True,
+            )
+            return
+        value = address.strip()
+        if method.value == "paypal":
+            if "@" not in value or "." not in value:
+                await interaction.followup.send(
+                    "Please provide a valid PayPal email address.",
+                    ephemeral=True,
+                )
+                return
+        elif method.value == "solana":
+            if len(value) < 32 or len(value) > 64:
+                await interaction.followup.send(
+                    "Please provide a valid Solana wallet address.",
+                    ephemeral=True,
+                )
+                return
+        doc = {
+            "id": secrets.token_hex(8),
+            "discord_id": str(interaction.user.id),
+            "method": method.value,
+            "address": value,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        await db.payment_methods.update_one(
+            {"discord_id": str(interaction.user.id), "method": method.value},
+            {"$set": doc},
+            upsert=True,
+        )
+        await interaction.followup.send(
+            f"Saved payment method **{method.name}**: `{value}`. Use `/manage-payment-methods` to view or remove your methods.",
+            ephemeral=True,
+        )
+
+    @tree.command(name="manage-payment-methods", description="View or remove your saved payout methods")
+    @app_commands.describe(
+        action="View or remove saved methods",
+        method="Payment method to remove",
+    )
+    @app_commands.choices(
+        action=[
+            app_commands.Choice(name="view", value="view"),
+            app_commands.Choice(name="remove", value="remove"),
+        ],
+        method=payment_method_choices,
+    )
+    async def manage_payment_methods_cmd(
+        interaction: discord.Interaction,
+        action: app_commands.Choice[str],
+        method: Optional[app_commands.Choice[str]] = None,
+    ):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        uid = str(interaction.user.id)
+        if action.value == "remove":
+            if not method:
+                await interaction.followup.send(
+                    "Please choose the payment method to remove.",
+                    ephemeral=True,
+                )
+                return
+            result = await db.payment_methods.delete_one(
+                {"discord_id": uid, "method": method.value}
+            )
+            if result.deleted_count:
+                await interaction.followup.send(
+                    f"Removed your `{method.name}` payment method.",
+                    ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    f"No saved `{method.name}` payment method found.",
+                    ephemeral=True,
+                )
+            return
+
+        items = await db.payment_methods.find({"discord_id": uid}, {"_id": 0}).to_list(25)
+        if not items:
+            await interaction.followup.send(
+                "No saved payment methods. Add one with `/payment-method`.",
+                ephemeral=True,
+            )
+            return
+        lines = [
+            "**Saved payment methods:**",
+        ]
+        for item in items:
+            lines.append(f"**{item['method'].title()}** — `{item['address']}`")
+        lines.append(
+            "\nTo remove one, use `/manage-payment-methods action:remove method:<method>`."
+        )
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
 
     @tree.command(name="accounts", description="Show your verified social accounts")
     async def accounts_cmd(interaction: discord.Interaction):

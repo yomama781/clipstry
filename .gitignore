@@ -34,6 +34,9 @@ dist
 
 *token.json*
 *credentials.json*
+.env
+backend/.env
+frontend/.env
 
 # Logs and debug files
 npm-debug.log*

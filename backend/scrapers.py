@@ -67,6 +67,9 @@ async def _apify_run(actor: str, payload: dict, timeout_s: int = 90) -> Optional
 
 
 async def fetch_apify_tiktok_bio(handle: str) -> Optional[str]:
+    if not APIFY_TOKEN:
+        logger.warning("APIFY_API_TOKEN missing; skipping Apify TikTok bio fetch.")
+        return None
     handle = normalize_handle("tiktok", handle)
     items = await _apify_run(
         APIFY_TIKTOK_ACTOR,
@@ -77,11 +80,19 @@ async def fetch_apify_tiktok_bio(handle: str) -> Optional[str]:
             "shouldDownloadCovers": False,
             "shouldDownloadSubtitles": False,
         },
+        timeout_s=15,
     )
+    # Use a shorter timeout for lightweight profile lookups to avoid long
+    # blocking calls that can make interactions appear unresponsive.
+    # If Apify doesn't return useful data, fall through to other methods.
     if not items:
+        logger.info("Apify TikTok actor returned no items for %s", handle)
         return None
     sig = (items[0].get("authorMeta") or {}).get("signature")
-    return sig if isinstance(sig, str) else ""
+    if isinstance(sig, str) and sig.strip():
+        return sig
+    logger.info("Apify TikTok actor returned empty signature for %s", handle)
+    return None
 
 
 async def fetch_apify_tiktok_views(post_url: str) -> Optional[int]:
@@ -265,12 +276,12 @@ async def fetch_tiktok_bio(handle: str) -> Optional[str]:
 async def fetch_bio(platform: str, handle: str) -> Optional[str]:
     """Return the bio/description text for a public profile."""
     if platform == "tiktok":
-        bio = await fetch_tiktok_bio(handle)
+        # Apify primary for TikTok bios; fall back to TikWM if Apify returns no bio.
+        bio = await fetch_apify_tiktok_bio(handle)
         if bio:
             return bio
-        # TikWM blocked/empty -> Apify fallback
-        bio = await fetch_apify_tiktok_bio(handle)
-        if bio is not None:
+        bio = await fetch_tiktok_bio(handle)
+        if bio:
             return bio
         # Fall through to HTML scrape as a last resort.
 

@@ -126,8 +126,10 @@ class SubmissionOut(BaseModel):
     platform: str
     post_url: str
     current_views: int
+    status: str
     last_checked: str
     created_at: str
+    reviewed_at: Optional[str] = None
 
 
 # ===== Helpers =====
