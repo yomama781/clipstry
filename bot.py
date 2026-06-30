@@ -27,6 +27,7 @@ from bs4 import BeautifulSoup
 from motor.motor_asyncio import AsyncIOMotorClient
 import discord
 from discord import app_commands
+from extra_commands import register_extra_commands
 
 try:
     from dotenv import load_dotenv
@@ -407,6 +408,7 @@ class Clipstry(discord.Client):
 
     async def setup_hook(self):
         register_commands(self.tree, self.db)
+      register_extra_commands(self.tree, self.db, CAMPAIGN_MANAGER_ROLE, has_role)
         try:
             synced = await self.tree.sync()
             logger.info("Synced %d slash commands", len(synced))
