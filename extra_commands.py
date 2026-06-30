@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 
 def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER_ROLE: str, has_role):
-    """Adds /set-payment, /payment-info, /campaign-stats to the bot's command tree."""
+    """Adds /set-payment, /payment-info, /campaign-stats, /my-stats to the bot's command tree."""
 
     async def active_campaign_autocomplete(interaction, current: str):
         q = {"status": "active"}
@@ -140,3 +140,104 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             embed.add_field(name="Top Submissions", value="\n".join(lines)[:1024], inline=False)
 
         await interaction.followup.send(embed=embed)
+
+    class MyStatsView(discord.ui.View):
+        def __init__(self, db, has_role, CAMPAIGN_MANAGER_ROLE):
+            super().__init__(timeout=180)
+            self.db = db
+            self.has_role = has_role
+            self.CAMPAIGN_MANAGER_ROLE = CAMPAIGN_MANAGER_ROLE
+
+        @discord.ui.button(label="Analytics", emoji="📈", style=discord.ButtonStyle.secondary)
+        async def analytics_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            uid = str(interaction.user.id)
+            subs = await self.db.submissions.find({"discord_id": uid}, {"_id": 0}).to_list(2000)
+            total_views = sum(s.get("current_views", 0) for s in subs)
+            campaigns = {s["campaign_id"] for s in subs}
+
+            embed = discord.Embed(title="📈 Your Analytics", color=0x002FA7)
+            embed.add_field(name="Total Views", value=f"{total_views:,}", inline=True)
+            embed.add_field(name="Submissions", value=str(len(subs)), inline=True)
+            embed.add_field(name="Campaigns Joined", value=str(len(campaigns)), inline=True)
+
+            if subs:
+                per_platform = {}
+                for s in subs:
+                    p = s.get("platform", "unknown")
+                    per_platform[p] = per_platform.get(p, 0) + s.get("current_views", 0)
+                embed.add_field(
+                    name="By Platform",
+                    value="\n".join(f"{p}: {v:,}" for p, v in sorted(per_platform.items(), key=lambda x: -x[1])),
+                    inline=False,
+                )
+            else:
+                embed.description = "No submissions yet. Submit a clip to a campaign to see stats here."
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+        @discord.ui.button(label="Payouts", emoji="💰", style=discord.ButtonStyle.secondary)
+        async def payouts_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            uid = str(interaction.user.id)
+
+            info = await self.db.payment_info.find_one({"discord_id": uid}, {"_id": 0})
+            subs = await self.db.submissions.find({"discord_id": uid}, {"_id": 0}).to_list(2000)
+
+            campaign_ids = list({s["campaign_id"] for s in subs})
+            campaigns = await self.db.campaigns.find(
+                {"id": {"$in": campaign_ids}}, {"_id": 0, "id": 1, "payout_rate": 1, "name": 1}
+            ).to_list(100) if campaign_ids else []
+            rate_by_campaign = {c["id"]: c.get("payout_rate", 0) for c in campaigns}
+            name_by_campaign = {c["id"]: c.get("name", "Unknown") for c in campaigns}
+
+            embed = discord.Embed(title="💰 Your Payouts", color=0x002FA7)
+
+            if info:
+                embed.add_field(name="Payment Method", value=f"{info['method']} — `{info['details']}`", inline=False)
+            else:
+                embed.add_field(
+                    name="Payment Method",
+                    value="Not set yet. Run `/set-payment` to add your payout details.",
+                    inline=False,
+                )
+
+            if subs:
+                lines = []
+                total_est = 0.0
+                per_campaign_views = {}
+                for s in subs:
+                    cid = s["campaign_id"]
+                    per_campaign_views[cid] = per_campaign_views.get(cid, 0) + s.get("current_views", 0)
+                for cid, views in per_campaign_views.items():
+                    rate = rate_by_campaign.get(cid, 0) or 0
+                    est = (views / 1000) * rate
+                    total_est += est
+                    lines.append(f"{name_by_campaign.get(cid, cid[:8])}: {views:,} views ≈ ${est:,.2f}")
+                embed.add_field(name="Estimated Earnings by Campaign", value="\n".join(lines)[:1024], inline=False)
+                embed.add_field(name="Estimated Total", value=f"${total_est:,.2f}", inline=False)
+                embed.set_footer(text="Estimates only — confirm final payout with your Campaign Manager.")
+            else:
+                embed.description = "No submissions yet, so no payout estimate to show."
+
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @tree.command(name="my-stats", description="See your personal stats and payout panel")
+    async def my_stats_cmd(interaction: discord.Interaction):
+        embed = discord.Embed(
+            title="Manage Your Stats",
+            description="Use the buttons below to view your performance and payout info.",
+            color=0x002FA7,
+        )
+        embed.add_field(
+            name="📈  Analytics",
+            value="View your total views and performance metrics",
+            inline=False,
+        )
+        embed.add_field(
+            name="💰  Payouts",
+            value="View your saved payment method and estimated earnings",
+            inline=False,
+        )
+        view = MyStatsView(db, has_role, CAMPAIGN_MANAGER_ROLE)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
