@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 
 
 def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER_ROLE: str, has_role):
-    """Adds /set-payment, /payment-info, /campaign-stats, /my-stats to the bot's command tree."""
+    """Adds /set-payment, /payment-info, /campaign-stats to the bot's command tree."""
 
     async def active_campaign_autocomplete(interaction, current: str):
         q = {"status": "active"}
@@ -241,3 +241,126 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
         )
         view = MyStatsView(db, has_role, CAMPAIGN_MANAGER_ROLE)
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @tree.command(name="payout-summary", description="Ready-to-pay breakdown for a campaign (Campaign Manager)")
+    @app_commands.describe(campaign_id="Pick a campaign")
+    @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
+    async def payout_summary_cmd(interaction: discord.Interaction, campaign_id: str):
+        await interaction.response.defer(thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_role(
+            interaction.user, CAMPAIGN_MANAGER_ROLE
+        ):
+            await interaction.followup.send(
+                f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to view payout summaries.",
+                ephemeral=True,
+            )
+            return
+
+        camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+        if not camp:
+            await interaction.followup.send("Campaign not found.", ephemeral=True)
+            return
+        rate = camp.get("payout_rate", 0) or 0
+
+        subs = await db.submissions.find({"campaign_id": campaign_id}, {"_id": 0}).to_list(2000)
+        if not subs:
+            await interaction.followup.send("No submissions for this campaign yet.", ephemeral=True)
+            return
+
+        per_creator_views = {}
+        for s in subs:
+            uid = s["discord_id"]
+            per_creator_views[uid] = per_creator_views.get(uid, 0) + s.get("current_views", 0)
+
+        creator_ids = list(per_creator_views.keys())
+        payment_docs = await db.payment_info.find(
+            {"discord_id": {"$in": creator_ids}}, {"_id": 0}
+        ).to_list(len(creator_ids))
+        payment_by_id = {p["discord_id"]: p for p in payment_docs}
+
+        paid_docs = await db.payouts.find(
+            {"campaign_id": campaign_id, "discord_id": {"$in": creator_ids}}, {"_id": 0}
+        ).to_list(len(creator_ids))
+        paid_by_id = {p["discord_id"]: p for p in paid_docs}
+
+        rows = []
+        total_owed = 0.0
+        total_paid = 0.0
+        for uid, views in sorted(per_creator_views.items(), key=lambda x: -x[1]):
+            amount = (views / 1000) * rate
+            total_owed += amount
+            pay_info = payment_by_id.get(uid)
+            method_str = f"{pay_info['method']} `{pay_info['details']}`" if pay_info else "⚠️ not set"
+            paid = paid_by_id.get(uid)
+            if paid:
+                total_paid += paid.get("amount", 0)
+                status = f"✅ Paid ${paid.get('amount', 0):,.2f}"
+            else:
+                status = "❌ Unpaid"
+            rows.append(f"<@{uid}> — {views:,} views — ${amount:,.2f} — {method_str} — {status}")
+
+        embed = discord.Embed(
+            title=f"Payout Summary: {camp['name']}",
+            description=f"Rate: ${rate:,.2f} / 1,000 views",
+            color=0x002FA7,
+        )
+        embed.add_field(name="Total Estimated Payout", value=f"${total_owed:,.2f}", inline=True)
+        embed.add_field(name="Total Already Paid", value=f"${total_paid:,.2f}", inline=True)
+        embed.add_field(name="Remaining", value=f"${(total_owed - total_paid):,.2f}", inline=True)
+
+        # Discord embed fields cap at 1024 chars, so chunk creator rows across fields
+        chunk = []
+        chunk_len = 0
+        field_count = 0
+        for row in rows:
+            if chunk_len + len(row) + 1 > 1000 or field_count >= 24:
+                embed.add_field(name="Creators" if field_count == 0 else "\u200b", value="\n".join(chunk), inline=False)
+                chunk, chunk_len = [], 0
+                field_count += 1
+            chunk.append(row)
+            chunk_len += len(row) + 1
+        if chunk and field_count < 24:
+            embed.add_field(name="Creators" if field_count == 0 else "\u200b", value="\n".join(chunk), inline=False)
+
+        await interaction.followup.send(embed=embed)
+
+    @tree.command(name="mark-paid", description="Mark a creator as paid for a campaign (Campaign Manager)")
+    @app_commands.describe(
+        campaign_id="Pick a campaign",
+        user="The creator you paid",
+        amount="Amount paid (USD)",
+    )
+    @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
+    async def mark_paid_cmd(interaction: discord.Interaction, campaign_id: str, user: discord.Member, amount: float):
+        await interaction.response.defer(thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_role(
+            interaction.user, CAMPAIGN_MANAGER_ROLE
+        ):
+            await interaction.followup.send(
+                f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to mark payouts.",
+                ephemeral=True,
+            )
+            return
+
+        camp = await db.campaigns.find_one({"id": campaign_id}, {"_id": 0})
+        if not camp:
+            await interaction.followup.send("Campaign not found.", ephemeral=True)
+            return
+
+        await db.payouts.update_one(
+            {"campaign_id": campaign_id, "discord_id": str(user.id)},
+            {
+                "$set": {
+                    "campaign_id": campaign_id,
+                    "discord_id": str(user.id),
+                    "amount": amount,
+                    "paid_by": str(interaction.user.id),
+                    "paid_at": datetime.now(timezone.utc).isoformat(),
+                }
+            },
+            upsert=True,
+        )
+
+        await interaction.followup.send(
+            f"✅ Marked {user.mention} as paid **${amount:,.2f}** for **{camp['name']}**."
+        )
