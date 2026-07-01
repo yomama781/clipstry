@@ -260,8 +260,9 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             subs = await self.db.submissions.find({"discord_id": uid}, {"_id": 0}).to_list(2000)
             total_views = sum(s.get("current_views", 0) for s in subs)
             campaigns_joined = len({s["campaign_id"] for s in subs})
-            approved = sum(1 for s in subs if s.get("status") == "approved")
-            denied = sum(1 for s in subs if s.get("status") == "denied")
+            # Case-insensitive status matching
+            approved = sum(1 for s in subs if s.get("status", "").lower() == "approved")
+            denied = sum(1 for s in subs if s.get("status", "").lower() == "denied")
 
             # Leaderboard rank
             all_creators = await self.db.submissions.aggregate([
