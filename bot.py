@@ -408,10 +408,22 @@ class Clipstry(discord.Client):
 
     async def setup_hook(self):
         register_commands(self.tree, self.db)
-      register_extra_commands(self.tree, self.db, CAMPAIGN_MANAGER_ROLE, has_role)
+        register_extra_commands(self.tree, self.db, CAMPAIGN_MANAGER_ROLE, has_role)
         try:
-            synced = await self.tree.sync()
-            logger.info("Synced %d slash commands", len(synced))
+            # If you want immediate command registration for a single test guild,
+            # set the GUILD_ID environment variable to the guild's ID (as an int).
+            # When GUILD_ID is set we sync commands only to that guild (appears instantly).
+            guild_id = os.environ.get("GUILD_ID")
+            if guild_id:
+                try:
+                    gid = int(guild_id)
+                    synced = await self.tree.sync(guild=discord.Object(id=gid))
+                    logger.info("Synced %d slash commands to guild %s", len(synced), gid)
+                except Exception as e:
+                    logger.exception("guild sync failed: %s", e)
+            else:
+                synced = await self.tree.sync()
+                logger.info("Synced %d global slash commands", len(synced))
         except Exception as e:
             logger.exception("sync failed: %s", e)
 
