@@ -112,7 +112,10 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
         top = sorted(subs, key=lambda s: s.get("current_views", 0), reverse=True)[:10]
         if top:
             lines = [f"<@{s['discord_id']}> — {s.get('current_views', 0):,} views — {s['post_url']}" for s in top]
-            embed.add_field(name="Top Submissions", value="\n".join(lines)[:1024], inline=False)
+            field_text = "\n".join(lines)
+            if len(field_text) > 1024:
+                field_text = field_text[:1000] + "\n...(truncated)"
+            embed.add_field(name="Top Submissions", value=field_text, inline=False)
         await interaction.followup.send(embed=embed)
 
     # ── /payout-summary ──────────────────────────────────────────────────────
@@ -177,7 +180,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             embed.add_field(name="Creators" if field_count == 0 else "\u200b", value="\n".join(chunk), inline=False)
         await interaction.followup.send(embed=embed)
 
-    # ── /mark-paid ───────────────────────────────────────────────────────────
+    # ── /mark-paid ──────────────────────────────────────────────────────────
     @tree.command(name="mark-paid", description="Mark a creator as paid for a campaign (Campaign Manager)")
     @app_commands.describe(campaign_id="Pick a campaign", user="The creator you paid", amount="Amount paid (USD)")
     @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
@@ -265,7 +268,8 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
                 {"$group": {"_id": "$discord_id", "total": {"$sum": "$current_views"}}},
                 {"$sort": {"total": -1}}
             ]).to_list(10000)
-            rank = next((i + 1 for i, c in enumerate(all_creators) if c["_id"] == uid), "N/A")
+            rank = next((i + 1 for i, c in enumerate(all_creators) if c["_id"] == uid), None)
+            rank_display = str(rank) if rank else "N/A"
 
             # Total earned across all campaigns
             paid_doc = await self.db.payouts.find({"discord_id": uid}, {"_id": 0}).to_list(100)
@@ -276,7 +280,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
                 color=0x57F287,
             )
             embed.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
-            embed.add_field(name="🚀 Leaderboard", value=str(rank), inline=False)
+            embed.add_field(name="🚀 Leaderboard", value=rank_display, inline=False)
             embed.add_field(name="🪙 Total Earned", value=f"${total_earned:,.2f}", inline=False)
             embed.add_field(name="🔥 Campaigns Joined", value=str(campaigns_joined), inline=False)
             embed.add_field(name="📈 Total Views", value=f"{total_views:,}", inline=False)
@@ -318,7 +322,10 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
                     est = (views / 1000) * rate
                     total_est += est
                     lines.append(f"{name_by_campaign.get(cid, cid[:8])}: {views:,} views ≈ ${est:,.2f}")
-                embed.add_field(name="Estimated Earnings by Campaign", value="\n".join(lines)[:1024], inline=False)
+                field_text = "\n".join(lines)
+                if len(field_text) > 1024:
+                    field_text = field_text[:1000] + "\n...(truncated)"
+                embed.add_field(name="Estimated Earnings by Campaign", value=field_text, inline=False)
                 embed.add_field(name="Estimated Total", value=f"${total_est:,.2f}", inline=False)
                 embed.set_footer(text=f"Estimates only — confirm with your Campaign Manager.\n{POWERED_BY}")
             else:
@@ -326,7 +333,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
                 embed.set_footer(text=POWERED_BY)
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # ── /my-stats ────────────────────────────────────────────────────────────
+    # ── /my-stats ───────────────────────────────────────────────────────────
     @tree.command(name="my-stats", description="See your personal stats and payout panel")
     async def my_stats_cmd(interaction: discord.Interaction):
         embed = discord.Embed(
