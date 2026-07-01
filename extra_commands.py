@@ -177,7 +177,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             embed.add_field(name="Creators" if field_count == 0 else "\u200b", value="\n".join(chunk), inline=False)
         await interaction.followup.send(embed=embed)
 
-    # ── /mark-paid ───────────────────────────────────────────────────────────
+    # ── /mark-paid ─────────────────────────────────────────────────────────[...]
     @tree.command(name="mark-paid", description="Mark a creator as paid for a campaign (Campaign Manager)")
     @app_commands.describe(campaign_id="Pick a campaign", user="The creator you paid", amount="Amount paid (USD)")
     @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
@@ -260,12 +260,17 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             approved = sum(1 for s in subs if s.get("status") == "approved")
             denied = sum(1 for s in subs if s.get("status") == "denied")
 
-            # Leaderboard rank
-            all_creators = await self.db.submissions.aggregate([
-                {"$group": {"_id": "$discord_id", "total": {"$sum": "$current_views"}}},
-                {"$sort": {"total": -1}}
-            ]).to_list(10000)
-            rank = next((i + 1 for i, c in enumerate(all_creators) if c["_id"] == uid), "N/A")
+            # Leaderboard rank — OPTIMIZED: only look at campaigns the user is in
+            if subs:
+                campaign_ids = list({s["campaign_id"] for s in subs})
+                all_creators = await self.db.submissions.aggregate([
+                    {"$match": {"campaign_id": {"$in": campaign_ids}}},
+                    {"$group": {"_id": "$discord_id", "total": {"$sum": "$current_views"}}},
+                    {"$sort": {"total": -1}}
+                ]).to_list(10000)
+                rank = next((i + 1 for i, c in enumerate(all_creators) if c["_id"] == uid), "N/A")
+            else:
+                rank = "N/A"
 
             # Total earned across all campaigns
             paid_doc = await self.db.payouts.find({"discord_id": uid}, {"_id": 0}).to_list(100)
@@ -326,7 +331,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
                 embed.set_footer(text=POWERED_BY)
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # ── /my-stats ────────────────────────────────────────────────────────────
+    # ── /my-stats ──────────────────────────────────────────────────────────
     @tree.command(name="my-stats", description="See your personal stats and payout panel")
     async def my_stats_cmd(interaction: discord.Interaction):
         embed = discord.Embed(
