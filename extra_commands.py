@@ -177,7 +177,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             embed.add_field(name="Creators" if field_count == 0 else "\u200b", value="\n".join(chunk), inline=False)
         await interaction.followup.send(embed=embed)
 
-    # ── /mark-paid ─────────────────────────────────────────────────────────[...]
+    # ── /mark-paid ───────────────────────────────────────────────────────────
     @tree.command(name="mark-paid", description="Mark a creator as paid for a campaign (Campaign Manager)")
     @app_commands.describe(campaign_id="Pick a campaign", user="The creator you paid", amount="Amount paid (USD)")
     @app_commands.autocomplete(campaign_id=active_campaign_autocomplete)
@@ -260,17 +260,12 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
             approved = sum(1 for s in subs if s.get("status") == "approved")
             denied = sum(1 for s in subs if s.get("status") == "denied")
 
-            # Leaderboard rank — OPTIMIZED: only look at campaigns the user is in
-            if subs:
-                campaign_ids = list({s["campaign_id"] for s in subs})
-                all_creators = await self.db.submissions.aggregate([
-                    {"$match": {"campaign_id": {"$in": campaign_ids}}},
-                    {"$group": {"_id": "$discord_id", "total": {"$sum": "$current_views"}}},
-                    {"$sort": {"total": -1}}
-                ]).to_list(10000)
-                rank = next((i + 1 for i, c in enumerate(all_creators) if c["_id"] == uid), "N/A")
-            else:
-                rank = "N/A"
+            # Leaderboard rank
+            all_creators = await self.db.submissions.aggregate([
+                {"$group": {"_id": "$discord_id", "total": {"$sum": "$current_views"}}},
+                {"$sort": {"total": -1}}
+            ]).to_list(10000)
+            rank = next((i + 1 for i, c in enumerate(all_creators) if c["_id"] == uid), "N/A")
 
             # Total earned across all campaigns
             paid_doc = await self.db.payouts.find({"discord_id": uid}, {"_id": 0}).to_list(100)
@@ -331,7 +326,7 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
                 embed.set_footer(text=POWERED_BY)
             await interaction.followup.send(embed=embed, ephemeral=True)
 
-    # ── /my-stats ──────────────────────────────────────────────────────────
+    # ── /my-stats ────────────────────────────────────────────────────────────
     @tree.command(name="my-stats", description="See your personal stats and payout panel")
     async def my_stats_cmd(interaction: discord.Interaction):
         embed = discord.Embed(
@@ -369,3 +364,105 @@ def register_extra_commands(tree: app_commands.CommandTree, db, CAMPAIGN_MANAGER
         view = StatsPanelView(db)
         await channel.send(embed=embed, view=view)
         await interaction.followup.send(f"✅ Stats panel posted in {channel.mention}!", ephemeral=True)
+
+
+    # ── Leaderboard helpers ──────────────────────────────────────────────────
+    def format_views(n: int) -> str:
+        if n >= 1_000_000_000:
+            return f"{n / 1_000_000_000:.1f}B"
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.1f}K"
+        return str(n)
+
+    async def build_leaderboard_embed(page: int) -> discord.Embed:
+        per_page = 10
+        offset = page * per_page
+
+        # Aggregate all-time views per creator
+        all_creators = await db.submissions.aggregate([
+            {"$group": {"_id": "$discord_id", "total": {"$sum": "$current_views"}}},
+            {"$sort": {"total": -1}}
+        ]).to_list(10000)
+
+        # Get hidden prefs
+        hidden_docs = await db.leaderboard_prefs.find({"hidden": True}, {"_id": 0, "discord_id": 1}).to_list(10000)
+        hidden_ids = {d["discord_id"] for d in hidden_docs}
+
+        total = len(all_creators)
+        total_pages = max(1, (total + per_page - 1) // per_page)
+        page = max(0, min(page, total_pages - 1))
+        slice_ = all_creators[offset: offset + per_page]
+
+        medals = {0: "🥇", 1: "🥈", 2: "🥉"}
+        lines = []
+        for i, entry in enumerate(slice_):
+            global_rank = offset + i
+            uid = entry["_id"]
+            views = format_views(entry["total"])
+            if uid in hidden_ids:
+                name = "Hidden"
+            else:
+                name = f"<@{uid}>"
+            rank_str = medals.get(global_rank, f"{global_rank + 1}.")
+            lines.append(f"{rank_str} **{name}: {views} Views**" if global_rank < 3 else f"{rank_str} **{name}: {views} Views**")
+
+        embed = discord.Embed(
+            title="Top Clippers All Time 📈",
+            description="\n".join(lines) if lines else "No clippers yet.",
+            color=0x57F287,
+        )
+        embed.set_footer(text=f"Page {page + 1}/{total_pages} • {POWERED_BY}")
+        return embed, total_pages
+
+    class LeaderboardView(discord.ui.View):
+        def __init__(self, db, page: int = 0, total_pages: int = 1, persistent: bool = False):
+            super().__init__(timeout=None if persistent else 180)
+            self.db = db
+            self.page = page
+            self.total_pages = total_pages
+            self._update_buttons()
+
+        def _update_buttons(self):
+            for item in self.children:
+                if hasattr(item, "custom_id"):
+                    if item.custom_id == "lb:prev":
+                        item.disabled = self.page <= 0
+                    elif item.custom_id == "lb:next":
+                        item.disabled = self.page >= self.total_pages - 1
+
+        @discord.ui.button(label="Previous", emoji="«", style=discord.ButtonStyle.secondary, custom_id="lb:prev")
+        async def prev_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.page = max(0, self.page - 1)
+            embed, self.total_pages = await build_leaderboard_embed(self.page)
+            self._update_buttons()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+        @discord.ui.button(label="Next", emoji="»", style=discord.ButtonStyle.success, custom_id="lb:next")
+        async def next_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            self.page = min(self.total_pages - 1, self.page + 1)
+            embed, self.total_pages = await build_leaderboard_embed(self.page)
+            self._update_buttons()
+            await interaction.response.edit_message(embed=embed, view=self)
+
+    # ── /leaderboard ─────────────────────────────────────────────────────────
+    @tree.command(name="leaderboard", description="View the all-time top clippers leaderboard")
+    async def leaderboard_cmd(interaction: discord.Interaction):
+        await interaction.response.defer(thinking=True)
+        embed, total_pages = await build_leaderboard_embed(0)
+        view = LeaderboardView(db, page=0, total_pages=total_pages)
+        await interaction.followup.send(embed=embed, view=view)
+
+    # ── /setup-leaderboard-panel ─────────────────────────────────────────────
+    @tree.command(name="setup-leaderboard-panel", description="Post the live leaderboard in a channel (Campaign Manager)")
+    @app_commands.describe(channel="The channel to post the leaderboard in")
+    async def setup_leaderboard_panel_cmd(interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_role(interaction.user, CAMPAIGN_MANAGER_ROLE):
+            await interaction.followup.send(f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to set up the leaderboard panel.", ephemeral=True)
+            return
+        embed, total_pages = await build_leaderboard_embed(0)
+        view = LeaderboardView(db, page=0, total_pages=total_pages, persistent=True)
+        await channel.send(embed=embed, view=view)
+        await interaction.followup.send(f"✅ Leaderboard panel posted in {channel.mention}!", ephemeral=True)
