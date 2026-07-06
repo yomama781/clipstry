@@ -408,19 +408,8 @@ class Clipstry(discord.Client):
 
     async def setup_hook(self):
         register_commands(self.tree, self.db)
-        register_extra_commands(
-            self.tree,
-            self.db,
-            CAMPAIGN_MANAGER_ROLE,
-            has_role,
-            fetch_post_views,
-            detect_platform_from_url,
-            normalize_handle,
-            APIFY_TOKEN,
-            _apify_run,
-        )
-
-        try:
+        register_extra_commands(self.tree, self.db, CAMPAIGN_MANAGER_ROLE, has_role, fetch_post_views, detect_platform_from_url, normalize_handle, APIFY_TOKEN, _apify_run)
+                try:
             # If you want immediate command registration for a single test guild,
             # set the GUILD_ID environment variable to the guild's ID (as an int).
             # When GUILD_ID is set we sync commands only to that guild (appears instantly).
