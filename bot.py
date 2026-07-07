@@ -538,7 +538,7 @@ def register_commands(tree: app_commands.CommandTree, db):
     )
     async def create_campaign_cmd(
         interaction, name: str, goal_views: int, payout: float,
-        description: Optional[str] = "",
+        description: Optional[str] = "", allowed_tiers: str = "All",
     ):
         await interaction.response.defer(thinking=True)
         if not isinstance(interaction.user, discord.Member) or not has_role(
@@ -560,7 +560,7 @@ def register_commands(tree: app_commands.CommandTree, db):
             "creator_user_id": None,
             "guild_id": str(interaction.guild_id) if interaction.guild_id else None,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "ended_at": None,
+            "ended_at": None, "allowed_tiers": ["Tier 1", "Tier 2", "Tier 3"] if allowed_tiers.lower() == "all" else [t.strip() for t in allowed_tiers.split(",")],
         }
         await db.campaigns.insert_one(camp)
         embed = discord.Embed(
@@ -620,6 +620,23 @@ def register_commands(tree: app_commands.CommandTree, db):
             return
         if camp["status"] != "active":
             await interaction.followup.send("Campaign is not active.", ephemeral=True)
+            return
+        allowed_tiers = camp.get("allowed_tiers", ["Tier 1", "Tier 2", "Tier 3"])
+        member_roles = [r.name for r in interaction.user.roles]
+        creator_tier = next((r for r in member_roles if r in ["Tier 1", "Tier 2", "Tier 3"]), None)
+        if not creator_tier:
+            await interaction.followup.send(
+                "You need to verify your demographics and be assigned a tier before submitting. "
+                "Head to the demographics channel to get verified.",
+                ephemeral=True,
+            )
+            return
+        if creator_tier not in allowed_tiers:
+            await interaction.followup.send(
+                f"This campaign only accepts **{', '.join(allowed_tiers)}** creators. "
+                f"Your current tier is **{creator_tier}**.",
+                ephemeral=True,
+            )
             return
         plat = detect_platform_from_url(post_url)
         if not plat:
