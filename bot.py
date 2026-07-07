@@ -535,6 +535,7 @@ def register_commands(tree: app_commands.CommandTree, db):
     @app_commands.describe(
         name="Campaign name", goal_views="Target total views",
         payout="Payout amount in USD", description="Short description",
+        allowed_tiers='Tiers allowed to submit: "Tier 1", "Tier 2", "Tier 3", or "All"',
     )
     async def create_campaign_cmd(
         interaction, name: str, goal_views: int, payout: float,
@@ -560,7 +561,8 @@ def register_commands(tree: app_commands.CommandTree, db):
             "creator_user_id": None,
             "guild_id": str(interaction.guild_id) if interaction.guild_id else None,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "ended_at": None, "allowed_tiers": ["Tier 1", "Tier 2", "Tier 3"] if allowed_tiers.lower() == "all" else [t.strip() for t in allowed_tiers.split(",")],
+            "ended_at": None,
+            "allowed_tiers": ["Tier 1", "Tier 2", "Tier 3"] if allowed_tiers.lower() == "all" else [t.strip() for t in allowed_tiers.split(",")],
         }
         await db.campaigns.insert_one(camp)
         embed = discord.Embed(
