@@ -733,3 +733,24 @@ def register_extra_commands(
         view = LeaderboardView(db, page=0, total_pages=total_pages, persistent=True)
         await channel.send(embed=embed, view=view)
         await interaction.followup.send(f"✅ Leaderboard panel posted in {channel.mention}!", ephemeral=True)
+        # ── /embed ───────────────────────────────────────────────────────────────
+    @tree.command(name="embed", description="Send a custom embed message to a channel (Campaign Manager)")
+    @app_commands.describe(
+        channel="The channel to send the embed to",
+        title="Title of the embed",
+        message="The message content of the embed",
+        color="Hex color code e.g. 00FF00 for green (optional, defaults to green)",
+    )
+    async def embed_cmd(interaction: discord.Interaction, channel: discord.TextChannel, title: str, message: str, color: str = "57F287"):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if not isinstance(interaction.user, discord.Member) or not has_role(interaction.user, CAMPAIGN_MANAGER_ROLE):
+            await interaction.followup.send(f"You need the **{CAMPAIGN_MANAGER_ROLE}** role to send embeds.", ephemeral=True)
+            return
+        try:
+            color_int = int(color.strip("#"), 16)
+        except ValueError:
+            color_int = 0x57F287
+        embed = discord.Embed(title=title, description=message, color=color_int)
+        embed.set_footer(text=POWERED_BY)
+        await channel.send(embed=embed)
+        await interaction.followup.send(f"✅ Embed sent to {channel.mention}!", ephemeral=True)
