@@ -1,0 +1,6 @@
+discord.py
+motor
+pymongo
+apify-client
+python-dotenv
+aiohttp
