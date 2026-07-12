@@ -419,6 +419,94 @@ def register_extra_commands(
             super().__init__(timeout=120)
             self.add_item(ScanAccountSelect(db, accounts, campaign_id))
 
+    # 🆕 Persistent review view (re-registered in bot.py setup_hook)
+    class ClipReviewView(discord.ui.View):
+        def __init__(self, db, submitter_id, post_url, submitter_user):
+            super().__init__(timeout=None)
+            self.db = db
+            self.submitter_id = str(submitter_id)
+            self.post_url = post_url
+            self.submitter_user = submitter_user
+
+        async def _is_admin(self, interaction: discord.Interaction) -> bool:
+            if not interaction.guild:
+                return False
+            if not isinstance(interaction.user, discord.Member):
+                return False
+            return bool(interaction.user.guild_permissions.administrator or has_role(interaction.user, CAMPAIGN_MANAGER_ROLE))
+
+        @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.green, custom_id="clip_review:accept")
+        async def accept_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not await self._is_admin(interaction):
+                return await interaction.response.send_message("❌ Only admins or Campaign Managers can review clips!", ephemeral=True)
+
+            await self.db.clip_stats.update_one(
+                {"discord_id": self.submitter_id},
+                {"$inc": {"accepted": 1}, "$setOnInsert": {"denied": 0, "discord_id": self.submitter_id}},
+                upsert=True,
+            )
+            await self.db.submissions.update_one(
+                {"discord_id": self.submitter_id, "post_url": self.post_url},
+                {"$set": {
+                    "status": "approved",
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                    "reviewed_by": str(interaction.user.id),
+                }},
+            )
+
+            # Disable buttons + edit embed
+            for child in self.children:
+                child.disabled = True
+            new_embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+            new_embed.color = discord.Color.green()
+            new_embed.add_field(name="Status", value=f"✅ **Accepted** by {interaction.user.mention}", inline=False)
+            await interaction.response.edit_message(embed=new_embed, view=self)
+
+            # DM the submitter
+            try:
+                stat_doc = await self.db.clip_stats.find_one({"discord_id": self.submitter_id})
+                count = stat_doc.get("accepted", 0) if stat_doc else 1
+                await self.submitter_user.send(
+                    f"✅ **Your clip has been accepted!**\n"
+                    f"Total accepted clips: **{count}** 🎉"
+                )
+            except Exception:
+                pass
+
+        @discord.ui.button(label="❌ Deny", style=discord.ButtonStyle.red, custom_id="clip_review:deny")
+        async def deny_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if not await self._is_admin(interaction):
+                return await interaction.response.send_message("❌ Only admins or Campaign Managers can review clips!", ephemeral=True)
+
+            await self.db.clip_stats.update_one(
+                {"discord_id": self.submitter_id},
+                {"$inc": {"denied": 1}, "$setOnInsert": {"accepted": 0, "discord_id": self.submitter_id}},
+                upsert=True,
+            )
+            await self.db.submissions.update_one(
+                {"discord_id": self.submitter_id, "post_url": self.post_url},
+                {"$set": {
+                    "status": "denied",
+                    "reviewed_at": datetime.now(timezone.utc).isoformat(),
+                    "reviewed_by": str(interaction.user.id),
+                }},
+            )
+
+            for child in self.children:
+                child.disabled = True
+            new_embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed()
+            new_embed.color = discord.Color.red()
+            new_embed.add_field(name="Status", value=f"❌ **Denied** by {interaction.user.mention}", inline=False)
+            await interaction.response.edit_message(embed=new_embed, view=self)
+
+            try:
+                await self.submitter_user.send(
+                    "❌ **Your clip was denied.**\n"
+                    "Make sure it follows the rules and try again!"
+                )
+            except Exception:
+                pass
+
     class SubmitClipModal(discord.ui.Modal, title="Submit a Clip"):
         url = discord.ui.TextInput(
             label="Clip URL",
@@ -464,8 +552,34 @@ def register_extra_commands(
                 "status": "pending",
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
             })
+
+            # 🆕 Send to clip review channel if configured
+            try:
+                config = await self.db.clip_config.find_one({"guild_id": str(interaction.guild_id)})
+                if config and config.get("channel_id"):
+                    channel = interaction.guild.get_channel(config["channel_id"])
+                    if channel:
+                        review_embed = discord.Embed(
+                            title="📹 New Clip Submission",
+                            description=f"{interaction.user.mention} submitted a video for review!",
+                            color=discord.Color.blue(),
+                        )
+                        review_embed.add_field(name="Video Link", value=url, inline=False)
+                        review_embed.add_field(name="Submitted by", value=f"{interaction.user} ({interaction.user.mention})", inline=False)
+                        review_embed.add_field(name="Platform", value=str(platform).title(), inline=True)
+                        review_embed.add_field(name="Current Views", value=f"{views:,}", inline=True)
+                        review_embed.add_field(name="Campaign", value=camp.get("name", "—"), inline=True)
+                        review_embed.set_footer(text=f"User ID: {interaction.user.id}")
+                        review_view = ClipReviewView(self.db, interaction.user.id, url, interaction.user)
+                        await channel.send(embed=review_embed, view=review_view)
+            except Exception as e:
+                # Don't break submission flow if review channel fails
+                print(f"[clip-review] failed: {e}")
+
             await interaction.followup.send(
-                f"✅ Clip submitted to **{camp['name']}**!\nCurrent views: **{views:,}**\nStatus: **Pending**",
+                f"✅ Clip submitted to **{camp['name']}**!\n"
+                f"Current views: **{views:,}**\n"
+                f"Status: **Pending review** 📋",
                 ephemeral=True,
             )
 
@@ -733,7 +847,7 @@ def register_extra_commands(
         view = LeaderboardView(db, page=0, total_pages=total_pages, persistent=True)
         await channel.send(embed=embed, view=view)
         await interaction.followup.send(f"✅ Leaderboard panel posted in {channel.mention}!", ephemeral=True)
-        # ── /embed ───────────────────────────────────────────────────────────────
+
     @tree.command(name="embed", description="Send a custom embed message to a channel (Campaign Manager)")
     @app_commands.describe(
         channel="The channel to send the embed to",
