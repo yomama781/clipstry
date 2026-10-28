@@ -384,8 +384,8 @@ def register_extra_commands(
                         actor = "apify/instagram-profile-scraper"
                         input_data = {"usernames": [handle], "resultsLimit": 10}
                     elif platform == "youtube":
-                        actor = "bernardo/youtube-scraper"
-                        input_data = {"handle": handle, "maxResults": 10}
+                        actor = "johnvc~youtube-shorts-api"
+                        input_data = {"channels": [handle], "maxResultsShorts": 10}
                     else:
                         actor = None
                         input_data = {}
@@ -393,7 +393,7 @@ def register_extra_commands(
                         results = await apify_run(actor, input_data)
                         for r in (results or [])[:10]:
                             url = r.get("webVideoUrl") or r.get("url") or r.get("shortUrl") or ""
-                            views = r.get("playCount") or r.get("viewsCount") or r.get("views") or 0
+                            views = r.get("playCount") or r.get("viewsCount") or r.get("views") or r.get("viewCount") or 0
                             if url:
                                 posts.append({"url": url, "views": views, "platform": platform})
                 except Exception:
